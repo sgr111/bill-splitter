@@ -1,12 +1,11 @@
 from typing import TypedDict, Annotated
 from langgraph.graph import StateGraph, END
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_groq import ChatGroq
 from app.config import settings
-import operator
 
-llm = ChatGoogleGenerativeAI(
-    model="gemini-2.0-flash-lite",
-    google_api_key=settings.GEMINI_API_KEY,
+llm = ChatGroq(
+    model="llama-3.1-8b-instant",
+    api_key=settings.GROQ_API_KEY,
     temperature=0.3,
 )
 

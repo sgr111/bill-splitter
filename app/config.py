@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
     GEMINI_API_KEY: str = ""
+    GROQ_API_KEY: str = ""
     BASE_URL: str = "http://localhost:8000"
     INVITE_EXPIRE_DAYS: int = 7
 
