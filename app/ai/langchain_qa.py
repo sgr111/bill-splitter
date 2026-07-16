@@ -1,11 +1,10 @@
-from langchain_google_genai import ChatGoogleGenerativeAI
-
+from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
 from app.config import settings
 
-llm = ChatGoogleGenerativeAI(
-    model="gemini-2.0-flash-lite",
-    google_api_key=settings.GEMINI_API_KEY,
+llm = ChatGroq(
+    model="llama-3.1-8b-instant",
+    api_key=settings.GROQ_API_KEY,
     temperature=0.3,
 )
 
@@ -35,7 +34,7 @@ async def ask_expense_question(expense_data: str, question: str) -> str:
 
 async def categorize_expense(description: str) -> str:
     prompt = ChatPromptTemplate.from_messages([
-        ("system", """You are an expense categorizer. 
+        ("system", """You are an expense categorizer.
 Given an expense description, return ONLY one category from this exact list:
 Food, Transport, Accommodation, Entertainment, Shopping, Other
 Return only the category word, nothing else."""),
