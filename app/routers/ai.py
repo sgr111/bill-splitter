@@ -1,16 +1,19 @@
 import uuid
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from pydantic import BaseModel
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 from app.dependencies import get_db, get_current_user
 from app.models.user import User
-from app.models.group import Group, GroupMember
+from app.models.group import GroupMember
 from app.models.expense import Expense, ExpenseSplit
 from app.ai.langchain_qa import ask_expense_question, categorize_expense
 from app.ai.langgraph_agent import run_agent
 
 router = APIRouter(prefix="/ai", tags=["AI"])
+limiter = Limiter(key_func=get_remote_address)
 
 
 class AskRequest(BaseModel):
@@ -44,7 +47,9 @@ async def assert_member(group_id: uuid.UUID, user_id: uuid.UUID, db: AsyncSessio
 
 
 @router.post("/ask")
+@limiter.limit("10/minute")
 async def ask_question(
+    request: Request,
     payload: AskRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -91,7 +96,9 @@ async def ask_question(
 
 
 @router.post("/categorize")
+@limiter.limit("20/minute")
 async def categorize(
+    request: Request,
     payload: CategorizeRequest,
     current_user: User = Depends(get_current_user),
 ):
@@ -103,7 +110,9 @@ async def categorize(
 
 
 @router.post("/agent/{group_id}")
+@limiter.limit("5/minute")
 async def run_group_agent(
+    request: Request,
     group_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
