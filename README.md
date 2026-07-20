@@ -1,4 +1,97 @@
----
+# Bill Splitter API 💸
+
+A production-ready **Splitwise-style REST API** built with FastAPI, PostgreSQL, and AI features.
+Users can create groups, add shared expenses, split bills (equal/unequal/percentage),
+settle debts, and get AI-powered expense insights.
+
+![Python](https://img.shields.io/badge/Python-3.11-blue)
+![FastAPI](https://img.shields.io/badge/FastAPI-0.139-green)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-Neon-blue)
+![Tests](https://img.shields.io/badge/Tests-54%20Passing-brightgreen)
+![AI](https://img.shields.io/badge/AI-Groq%20%2B%20LangChain-orange)
+![CI](https://img.shields.io/badge/CI-GitHub%20Actions-green)
+
+## Features
+
+- **JWT Authentication** — Register, login, refresh tokens, bcrypt password hashing
+- **Group Management** — Create groups, invite members via Base62 short links, leave groups
+- **Expense Splitting** — 3 split modes: equal, unequal, percentage
+- **Debt Minimization** — Greedy algorithm to suggest minimum settlements
+- **AI Assistant** — Natural language expense queries powered by Groq + LangChain
+- **Expense Categorization** — Auto-categorize expenses using LLM (Food, Transport, etc.)
+- **LangGraph Agent** — Conditional routing agent with 3 dynamic paths based on group financial state
+- **IDOR Protection** — UUID primary keys + per-endpoint authorization checks
+- **Soft Deletes** — Groups and expenses use is_active/is_deleted flags
+- **APScheduler** — Background reminders for unsettled dues older than 3 days
+- **Rate Limiting** — slowapi per-IP limits on AI endpoints
+- **54+ Tests** — Unit, integration, and security (IDOR) test suite
+- **CI/CD** — GitHub Actions runs full test suite on every push
+
+## Tech Stack
+
+| Layer | Technology |
+|-------|-----------|
+| Framework | FastAPI |
+| Language | Python 3.11 |
+| Database | PostgreSQL (Neon cloud) |
+| ORM | SQLAlchemy 2.0 async |
+| Migrations | Alembic |
+| Auth | JWT (python-jose) + bcrypt (passlib) |
+| AI | Groq (llama-3.1-8b) + LangChain + LangGraph |
+| Scheduler | APScheduler |
+| Rate Limiting | slowapi |
+| Testing | pytest + pytest-asyncio + httpx |
+| CI/CD | GitHub Actions |
+| Deployment | Render (coming soon) |
+
+## Project Structure
+
+```
+bill-splitter/
+├── app/
+│   ├── ai/
+│   │   ├── langchain_qa.py      # LangChain Q&A + categorization
+│   │   └── langgraph_agent.py   # LangGraph conditional routing agent
+│   ├── models/
+│   │   ├── user.py
+│   │   ├── group.py
+│   │   ├── expense.py
+│   │   ├── settlement.py
+│   │   └── invite.py
+│   ├── routers/
+│   │   ├── auth.py
+│   │   ├── groups.py
+│   │   ├── expenses.py
+│   │   ├── splits.py
+│   │   ├── settlements.py
+│   │   ├── invites.py
+│   │   └── ai.py
+│   ├── schemas/
+│   ├── services/
+│   │   ├── auth_service.py
+│   │   ├── split_service.py
+│   │   ├── settle_service.py
+│   │   ├── invite_service.py
+│   │   └── reminder_service.py
+│   ├── config.py
+│   ├── database.py
+│   ├── dependencies.py
+│   └── main.py
+├── tests/
+│   ├── conftest.py
+│   ├── test_auth.py             # 10 tests
+│   ├── test_groups.py           # 7 tests
+│   ├── test_expenses.py         # 7 tests
+│   ├── test_splits.py           # 3 tests
+│   ├── test_settlements.py      # 4 tests
+│   ├── test_invites.py          # 7 tests
+│   ├── test_security.py         # 8 IDOR tests
+│   └── test_ai.py               # 8 AI tests
+├── alembic/
+├── .env.example
+├── requirements.txt
+└── README.md
+```
 
 ## API Endpoints
 
@@ -55,9 +148,21 @@
 |--------|----------|-------|-------------|
 | POST | /ai/ask | 10/min | Natural language expense query |
 | POST | /ai/categorize | 20/min | Auto-categorize expense |
-| POST | /ai/agent/{group_id} | 5/min | Full LangGraph agent run |
+| POST | /ai/agent/{group_id} | 5/min | LangGraph conditional routing agent |
 
----
+## LangGraph Agent — 3 Dynamic Routes
+
+The AI agent analyzes group financial state and dynamically selects one of 3 paths:
+
+```
+START
+  ↓
+[analyze_state] — checks expenses + balances
+  ↓
+  ├── empty    → No expenses → Direct message (no LLM call)
+  ├── all_clear → All settled → Short congratulations (1 LLM call)
+  └── analyze  → Unsettled dues → Full analysis + reminders (1 LLM call)
+```
 
 ## Setup & Installation
 
@@ -76,7 +181,7 @@ cd bill-splitter
 # Create virtual environment
 python -m venv venv
 venv\Scripts\activate  # Windows
-# source venv/bin/activate  # Linux/Mac
+source venv/bin/activate  # Linux/Mac
 
 # Install dependencies
 python -m pip install -r requirements.txt
@@ -112,8 +217,6 @@ INVITE_EXPIRE_DAYS=7
 pytest tests/ -v
 ```
 
----
-
 ## Split Types
 
 | Type | How it works |
@@ -122,11 +225,10 @@ pytest tests/ -v
 | `unequal` | Caller provides exact amount for each user (must sum to total) |
 | `percentage` | Caller provides percentage for each user (must sum to 100%) |
 
----
-
 ## AI Features
 
 **POST /ai/ask** — Ask natural language questions:
+
 ```json
 {
   "group_id": "uuid-here",
@@ -135,19 +237,18 @@ pytest tests/ -v
 ```
 
 **POST /ai/categorize** — Auto-categorize expenses:
+
 ```json
 {
   "description": "Dinner at Barbeque Nation"
 }
-// Returns: { "category": "Food" }
 ```
 
-**POST /ai/agent/{group_id}** — Full group analysis:
-```json
-// Returns: summary, reminders, and AI-generated report
-```
+Returns: `{ "category": "Food" }`
 
----
+**POST /ai/agent/{group_id}** — Conditional routing agent:
+
+Returns: `summary`, `reminders`, and AI-generated `final_report`
 
 ## Security
 
@@ -157,11 +258,11 @@ pytest tests/ -v
 - **Per-endpoint authorization** — Every endpoint verifies group membership
 - **IDOR test suite** — 8 dedicated security tests verify data isolation
 - **Rate limiting** — AI endpoints protected with slowapi
-
----
+- **Secrets management** — All secrets in .env, never committed to git
 
 ## Author
 
 **Saurabh Sagar** — Backend Developer & QA Automation Engineer
+
 - GitHub: [@sgr111](https://github.com/sgr111)
 - Email: sgrsourabh111@gmail.com
