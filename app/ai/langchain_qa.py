@@ -1,12 +1,6 @@
-from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
-from app.config import settings
 
-llm = ChatGroq(
-    model="llama-3.1-8b-instant",
-    api_key=settings.GROQ_API_KEY,
-    temperature=0.3,
-)
+from app.ai.llm_provider import llm, extract_text
 
 qa_prompt = ChatPromptTemplate.from_messages([
     ("system", """You are a helpful expense assistant for a bill splitting app.
@@ -29,7 +23,7 @@ async def ask_expense_question(expense_data: str, question: str) -> str:
         "expense_data": expense_data,
         "question": question,
     })
-    return response.content
+    return extract_text(response.content)
 
 
 async def categorize_expense(description: str) -> str:
@@ -42,6 +36,6 @@ Return only the category word, nothing else."""),
     ])
     chain = prompt | llm
     response = await chain.ainvoke({"description": description})
-    category = response.content.strip()
+    category = extract_text(response.content).strip()
     valid = ["Food", "Transport", "Accommodation", "Entertainment", "Shopping", "Other"]
     return category if category in valid else "Other"
