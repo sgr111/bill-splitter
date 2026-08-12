@@ -1,4 +1,5 @@
 import uuid
+import logging
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -14,6 +15,7 @@ from app.ai.langgraph_agent import run_agent
 
 router = APIRouter(prefix="/ai", tags=["AI"])
 limiter = Limiter(key_func=get_remote_address)
+logger = logging.getLogger(__name__)
 
 
 class AskRequest(BaseModel):
@@ -26,6 +28,7 @@ class CategorizeRequest(BaseModel):
 
 
 def handle_ai_error(e: Exception):
+    logger.error(f"AI call failed: {type(e).__name__}: {e}", exc_info=True)
     error_str = str(e)
     if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str:
         raise HTTPException(
