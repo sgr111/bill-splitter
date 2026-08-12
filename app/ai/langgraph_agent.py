@@ -1,34 +1,9 @@
 from typing import TypedDict
 from langgraph.graph import StateGraph, END
-from langchain_groq import ChatGroq
-from langchain_google_genai import ChatGoogleGenerativeAI
-from app.config import settings
+from app.ai.llm_provider import llm, extract_text
 import logging
 
 logger = logging.getLogger(__name__)
-
-groq_llm = ChatGroq(
-    model="llama-3.1-8b-instant",
-    api_key=settings.GROQ_API_KEY,
-    temperature=0.3,
-)
-
-gemini_llm = ChatGoogleGenerativeAI(
-    model="gemini-2.0-flash-lite",
-    google_api_key=settings.GEMINI_API_KEY,
-    temperature=0.3,
-)
-
-
-async def get_llm_response(prompt: str) -> str:
-    try:
-        logger.info("Agent: Trying Groq...")
-        response = await groq_llm.ainvoke(prompt)
-        return response.content
-    except Exception as e:
-        logger.warning(f"Agent Groq failed: {e}. Falling back to Gemini...")
-        response = await gemini_llm.ainvoke(prompt)
-        return response.content
 
 
 class AgentState(TypedDict):
@@ -107,11 +82,12 @@ async def handle_empty_group(state: AgentState) -> AgentState:
 async def handle_all_clear(state: AgentState) -> AgentState:
     """Sab settled — celebration message."""
     state["reminders"] = []
-    state["final_report"] = await get_llm_response(
+    response = await llm.ainvoke(
         f"The group has {len(state['expenses'])} expenses and all dues are "
         f"completely settled. Write a short friendly congratulations message "
         f"(2 sentences max) for the group. Summary: {state['summary']}"
     )
+    state["final_report"] = extract_text(response.content)
     return state
 
 
@@ -160,7 +136,8 @@ Pending Reminders:
 Write a friendly, concise report (3-4 sentences) summarizing the group's 
 financial status and what actions are needed to settle up."""
 
-    state["final_report"] = await get_llm_response(prompt)
+    response = await llm.ainvoke(prompt)
+    state["final_report"] = extract_text(response.content)
     return state
 
 
