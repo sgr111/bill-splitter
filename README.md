@@ -7,8 +7,8 @@ settle debts, and get AI-powered expense insights.
 ![Python](https://img.shields.io/badge/Python-3.11-blue)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.139-green)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-Neon-blue)
-![Tests](https://img.shields.io/badge/Tests-54%20Passing-brightgreen)
-![AI](https://img.shields.io/badge/AI-Groq%20%2B%20LangChain-orange)
+![Tests](https://img.shields.io/badge/Tests-58%20Passing-brightgreen)
+![AI](https://img.shields.io/badge/AI-Groq%20%2B%20Gemini%20Fallback-orange)
 ![CI](https://img.shields.io/badge/CI-GitHub%20Actions-green)
 
 ## Features
@@ -20,11 +20,12 @@ settle debts, and get AI-powered expense insights.
 - **AI Assistant** — Natural language expense queries powered by Groq + LangChain
 - **Expense Categorization** — Auto-categorize expenses using LLM (Food, Transport, etc.)
 - **LangGraph Agent** — Conditional routing agent with 3 dynamic paths based on group financial state
+- **Multi-Provider Fallback** — Automatic Groq → Gemini fallback via LangChain's `with_fallbacks()`, so AI endpoints stay up through a single-provider outage
 - **IDOR Protection** — UUID primary keys + per-endpoint authorization checks
 - **Soft Deletes** — Groups and expenses use is_active/is_deleted flags
 - **APScheduler** — Background reminders for unsettled dues older than 3 days
 - **Rate Limiting** — slowapi per-IP limits on AI endpoints
-- **54+ Tests** — Unit, integration, and security (IDOR) test suite
+- **58+ Tests** — Unit, integration, security (IDOR), and provider-fallback test suites
 - **CI/CD** — GitHub Actions runs full test suite on every push
 
 ## Tech Stack
@@ -37,7 +38,7 @@ settle debts, and get AI-powered expense insights.
 | ORM | SQLAlchemy 2.0 async |
 | Migrations | Alembic |
 | Auth | JWT (python-jose) + bcrypt (passlib) |
-| AI | Groq (llama-3.1-8b) + LangChain + LangGraph |
+| AI | Groq (llama-3.1-8b, primary) + Gemini (gemini-3.5-flash-lite, automatic fallback) + LangChain + LangGraph |
 | Scheduler | APScheduler |
 | Rate Limiting | slowapi |
 | Testing | pytest + pytest-asyncio + httpx |
@@ -51,7 +52,8 @@ bill-splitter/
 ├── app/
 │   ├── ai/
 │   │   ├── langchain_qa.py      # LangChain Q&A + categorization
-│   │   └── langgraph_agent.py   # LangGraph conditional routing agent
+│   │   ├── langgraph_agent.py   # LangGraph conditional routing agent
+│   │   └── llm_provider.py      # Shared Groq->Gemini fallback-wired LLM instance
 │   ├── models/
 │   │   ├── user.py
 │   │   ├── group.py
@@ -86,7 +88,8 @@ bill-splitter/
 │   ├── test_settlements.py      # 4 tests
 │   ├── test_invites.py          # 7 tests
 │   ├── test_security.py         # 8 IDOR tests
-│   └── test_ai.py               # 8 AI tests
+│   ├── test_ai.py               # 8 AI tests
+│   └── test_llm_fallback.py     # 4 provider-fallback tests
 ├── alembic/
 ├── .env.example
 ├── requirements.txt
@@ -164,12 +167,23 @@ START
   └── analyze  → Unsettled dues → Full analysis + reminders (1 LLM call)
 ```
 
+## AI Provider Fallback
+
+All LLM calls (Q&A, categorization, and the LangGraph agent) go through a shared,
+fallback-wired LLM instance: **Groq is the primary provider**, and if a Groq call
+fails for any reason (outage, rate limit, timeout), LangChain's `with_fallbacks()`
+automatically retries the same request against **Gemini** — no manual error
+handling required at each call site. This is covered by a dedicated test suite
+(`test_llm_fallback.py`) that forces Groq to fail and verifies Gemini serves the
+request instead.
+
 ## Setup & Installation
 
 ### Prerequisites
 - Python 3.11+
 - PostgreSQL (or Neon free tier)
 - Groq API key (free at console.groq.com)
+- Gemini API key (free at aistudio.google.com)
 
 ### Local Setup
 
