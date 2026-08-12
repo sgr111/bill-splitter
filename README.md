@@ -1,49 +1,121 @@
 # Bill Splitter API 💸
 
-A production-ready **Splitwise-style REST API** built with FastAPI, PostgreSQL, and AI features.
-Users can create groups, add shared expenses, split bills (equal/unequal/percentage),
-settle debts, and get AI-powered expense insights.
+![Python](https://img.shields.io/badge/Python-3.11-blue?logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-0.139-009688?logo=fastapi&logoColor=white)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-Neon-336791?logo=postgresql&logoColor=white)
+![Tests](https://img.shields.io/badge/pytest-58_passing-brightgreen?logo=pytest&logoColor=white)
+![AI](https://img.shields.io/badge/AI-Groq_%2B_Gemini_Fallback-4285F4?logo=google&logoColor=white)
+![CI](https://img.shields.io/badge/CI-GitHub_Actions-2088FF?logo=githubactions&logoColor=white)
 
-![Python](https://img.shields.io/badge/Python-3.11-blue)
-![FastAPI](https://img.shields.io/badge/FastAPI-0.139-green)
-![PostgreSQL](https://img.shields.io/badge/PostgreSQL-Neon-blue)
-![Tests](https://img.shields.io/badge/Tests-58%20Passing-brightgreen)
-![AI](https://img.shields.io/badge/AI-Groq%20%2B%20Gemini%20Fallback-orange)
-![CI](https://img.shields.io/badge/CI-GitHub%20Actions-green)
+> A production-style Splitwise clone built with FastAPI, PostgreSQL, and AI-powered expense
+> insights — with automatic multi-provider LLM fallback (Groq primary, Gemini on failure) so
+> the AI features stay up through a single-provider outage.
 
-## Features
+## Introduction
 
-- **JWT Authentication** — Register, login, refresh tokens, bcrypt password hashing
-- **Group Management** — Create groups, invite members via Base62 short links, leave groups
-- **Expense Splitting** — 3 split modes: equal, unequal, percentage
-- **Debt Minimization** — Greedy algorithm to suggest minimum settlements
-- **AI Assistant** — Natural language expense queries powered by Groq + LangChain
-- **Expense Categorization** — Auto-categorize expenses using LLM (Food, Transport, etc.)
-- **LangGraph Agent** — Conditional routing agent with 3 dynamic paths based on group financial state
-- **Multi-Provider Fallback** — Automatic Groq → Gemini fallback via LangChain's `with_fallbacks()`, so AI endpoints stay up through a single-provider outage
-- **IDOR Protection** — UUID primary keys + per-endpoint authorization checks
-- **Soft Deletes** — Groups and expenses use is_active/is_deleted flags
-- **APScheduler** — Background reminders for unsettled dues older than 3 days
-- **Rate Limiting** — slowapi per-IP limits on AI endpoints
-- **58+ Tests** — Unit, integration, security (IDOR), and provider-fallback test suites
-- **CI/CD** — GitHub Actions runs full test suite on every push
+- REST API for group expense splitting — JWT auth, group management, three split modes
+  (equal/unequal/percentage), and a greedy debt-minimization algorithm for settle-up suggestions.
+- Three AI features on top: natural-language Q&A over a group's real expense data, LLM-based
+  expense categorization, and a **LangGraph conditional-routing agent** that picks one of three
+  paths (empty group / all settled / needs analysis) based on actual financial state — skipping
+  the LLM call entirely when there's nothing to analyze.
+- Every LLM call — Q&A, categorization, and both LLM-calling agent nodes — goes through a single
+  shared, fallback-wired LLM instance (`app/ai/llm_provider.py`): **Groq is primary**, and
+  LangChain's `with_fallbacks()` automatically retries against **Gemini** if Groq fails, with no
+  manual error handling at any call site.
+- IDOR-hardened by design — UUID primary keys plus explicit per-endpoint membership/ownership
+  checks — and covered by a dedicated 8-test security suite alongside the main test suite.
+- 58 tests total (auth, CRUD, security/IDOR, AI endpoints, and a dedicated provider-fallback
+  suite that forces Groq to fail and verifies Gemini serves the request instead), run
+  automatically on every push via GitHub Actions.
 
-## Tech Stack
+---
 
-| Layer | Technology |
-|-------|-----------|
-| Framework | FastAPI |
-| Language | Python 3.11 |
-| Database | PostgreSQL (Neon cloud) |
-| ORM | SQLAlchemy 2.0 async |
-| Migrations | Alembic |
-| Auth | JWT (python-jose) + bcrypt (passlib) |
-| AI | Groq (llama-3.1-8b, primary) + Gemini (gemini-3.5-flash-lite, automatic fallback) + LangChain + LangGraph |
-| Scheduler | APScheduler |
-| Rate Limiting | slowapi |
-| Testing | pytest + pytest-asyncio + httpx |
-| CI/CD | GitHub Actions |
-| Deployment | Render (coming soon) |
+## Architecture
+
+```
+                ┌──────────────────────────────────┐
+                │         FastAPI Application       │
+                │                                   │
+     JWT Auth ──┤  routers/auth.py                  │
+                │  routers/groups.py                │
+                │  routers/expenses.py   ───────────┼── SQLAlchemy async ORM
+                │  routers/splits.py                │        │
+                │  routers/settlements.py           │        │
+                │  routers/invites.py               │        ▼
+                │  routers/ai.py         ───────┐   │  ┌─────────────┐
+                └────────────────────────────────┤   │  │  PostgreSQL │
+                                                  │   │  │   (Neon)    │
+                ┌─────────────────────────────────▼──┘  │             │
+                │      AI Layer (LangChain/LangGraph)    │  users      │
+                │                                        │  groups     │
+                │  langchain_qa.py                       │  expenses   │
+                │   ├── ask_expense_question()            │  splits     │
+                │   └── categorize_expense()               │  settlements│
+                │                                          │  invites    │
+                │  langgraph_agent.py (3-route agent)      └─────────────┘
+                │   ├── analyze_state ── routes on
+                │   │     expenses + balances
+                │   ├── empty_group ── no LLM call
+                │   ├── all_clear ── 1 LLM call
+                │   └── reminders → report ── 1 LLM call
+                │             │
+                │             ▼
+                │  llm_provider.py
+                │   groq_llm ──with_fallbacks──▶ gemini_llm
+                │   (primary)                    (automatic fallback)
+                │             │
+                │             ▼
+                │   extract_text() ── normalizes response.content
+                │   across providers (Gemini 3.x returns a list of
+                │   content blocks, not a plain string)
+                └────────────────────────────────────────┘
+
+        config.py (pydantic-settings) ── single source of truth for
+        SECRET_KEY / GROQ_API_KEY / GEMINI_API_KEY / DATABASE_URL
+```
+
+---
+
+## A FastAPI Project Demonstrating
+
+- **JWT Auth** — register, login, refresh tokens, bcrypt password hashing
+- **IDOR Protection** — UUID primary keys + per-endpoint authorization checks, verified by an 8-test security suite
+- **Soft Deletes** — groups/expenses use `is_active`/`is_deleted` flags instead of hard deletes
+- **Greedy Debt Minimization** — settle-up suggestions computed with the minimum number of transactions, not naive pairwise settlement
+- **LangChain** — chains wrapping every Groq/Gemini call (Q&A, categorization)
+- **LangGraph** — a real conditional-routing agent, not just a linear chain — 3 dynamic paths based on computed group state
+- **Multi-Provider Fallback** — `with_fallbacks()`-based automatic Groq→Gemini failover, shared across the whole AI layer via one `llm_provider.py` module
+- **APScheduler** — background reminders for dues unsettled longer than 3 days
+- **Rate Limiting** — slowapi per-IP limits on all AI endpoints (tightest on the heaviest, multi-call agent endpoint)
+- **Alembic** — versioned schema migrations
+- **pytest** — 58-test suite: CRUD, auth, security/IDOR, AI endpoints, and a dedicated fallback suite that mocks Groq to force a real Gemini failover
+
+---
+
+## What This Project Does — At A Glance
+
+### AI Capabilities
+
+| Feature | Endpoint | Limit | What It Does |
+|---------|----------|-------|-------------|
+| **Expense Q&A** | `POST /ai/ask` | 10/min | Ask plain-English questions about a group's expenses — answered only from that group's real data |
+| **Auto-Categorization** | `POST /ai/categorize` | 20/min | Classifies an expense description into Food/Transport/Accommodation/Entertainment/Shopping/Other |
+| **Conditional Agent** | `POST /ai/agent/{group_id}` | 5/min | LangGraph agent — routes to a no-LLM message, a short congratulations, or a full analysis + reminders, based on actual group state |
+
+### Core Infrastructure
+
+| Feature | Technology | What It Does |
+|---------|-----------|---------------|
+| **Auth** | python-jose + bcrypt | Short-lived access tokens (30 min) + refresh tokens (7 days) |
+| **DB Layer** | SQLAlchemy 2.0 async | Async engine + sessions throughout, no blocking DB calls |
+| **Migrations** | Alembic | Versioned, reversible schema changes |
+| **Rate Limiting** | slowapi | Per-IP limits scoped tightest on the most expensive AI endpoint |
+| **Scheduler** | APScheduler | Background job for overdue-settlement reminders |
+| **LLM Fallback** | LangChain `with_fallbacks()` | Groq primary, Gemini automatic failover — one shared `llm` instance for the whole AI layer |
+| **Content Normalization** | `extract_text()` helper | Handles both plain-string (Groq) and list-of-blocks (Gemini 3.x) response formats transparently |
+
+---
 
 ## Project Structure
 
@@ -53,7 +125,7 @@ bill-splitter/
 │   ├── ai/
 │   │   ├── langchain_qa.py      # LangChain Q&A + categorization
 │   │   ├── langgraph_agent.py   # LangGraph conditional routing agent
-│   │   └── llm_provider.py      # Shared Groq->Gemini fallback-wired LLM instance
+│   │   └── llm_provider.py      # Shared Groq->Gemini fallback-wired LLM + extract_text()
 │   ├── models/
 │   │   ├── user.py
 │   │   ├── group.py
@@ -80,7 +152,7 @@ bill-splitter/
 │   ├── dependencies.py
 │   └── main.py
 ├── tests/
-│   ├── conftest.py
+│   ├── conftest.py              # function-scoped db_engine fixture (see Known Issues Fixed #4)
 │   ├── test_auth.py             # 10 tests
 │   ├── test_groups.py           # 7 tests
 │   ├── test_expenses.py         # 7 tests
@@ -96,7 +168,10 @@ bill-splitter/
 └── README.md
 ```
 
-## API Endpoints
+---
+
+<details>
+<summary><h2 style="display:inline">API Endpoints</h2></summary>
 
 ### Auth
 | Method | Endpoint | Auth | Description |
@@ -153,29 +228,105 @@ bill-splitter/
 | POST | /ai/categorize | 20/min | Auto-categorize expense |
 | POST | /ai/agent/{group_id} | 5/min | LangGraph conditional routing agent |
 
-## LangGraph Agent — 3 Dynamic Routes
+</details>
 
-The AI agent analyzes group financial state and dynamically selects one of 3 paths:
+---
+
+## LangGraph Agent — 3 Dynamic Routes
 
 ```
 START
   ↓
 [analyze_state] — checks expenses + balances
   ↓
-  ├── empty    → No expenses → Direct message (no LLM call)
+  ├── empty     → No expenses → Direct message (no LLM call)
   ├── all_clear → All settled → Short congratulations (1 LLM call)
-  └── analyze  → Unsettled dues → Full analysis + reminders (1 LLM call)
+  └── analyze   → Unsettled dues → reminders → Full analysis report (1 LLM call)
 ```
+
+---
 
 ## AI Provider Fallback
 
-All LLM calls (Q&A, categorization, and the LangGraph agent) go through a shared,
-fallback-wired LLM instance: **Groq is the primary provider**, and if a Groq call
-fails for any reason (outage, rate limit, timeout), LangChain's `with_fallbacks()`
-automatically retries the same request against **Gemini** — no manual error
-handling required at each call site. This is covered by a dedicated test suite
-(`test_llm_fallback.py`) that forces Groq to fail and verifies Gemini serves the
-request instead.
+All LLM calls — Q&A, categorization, and both LLM-calling agent nodes — go through one shared,
+fallback-wired instance in `app/ai/llm_provider.py`:
+
+```python
+llm = groq_llm.with_fallbacks([gemini_llm])
+```
+
+**Groq is primary.** If a Groq call fails for any reason (outage, rate limit, timeout),
+LangChain automatically retries the same request against **Gemini** — no manual try/except at
+any call site, and no code needs to know which provider actually answered. Covered by
+`tests/test_llm_fallback.py`, which mocks Groq to force a failure and asserts the endpoint
+still returns a valid, Gemini-sourced response.
+
+---
+
+<details>
+<summary><h2 style="display:inline">Known Issues Fixed</h2></summary>
+
+Real bugs found and fixed during development, documented here rather than left as invisible
+history — because "it works" and "here's what broke and how it was diagnosed" are different,
+more useful claims.
+
+### 1. Instance-level mocking crashed on Pydantic model cleanup
+Mocking `groq_llm.ainvoke` directly (instance-level) crashed during test teardown with
+`AttributeError: 'ChatGroq' object has no attribute 'ainvoke'`. Pydantic models override
+`__delattr__` to only allow deleting declared fields — `ainvoke` is an inherited method, not a
+field, so cleanup's `delattr()` call was rejected. **Fixed** by mocking the `ChatGroq` class
+itself instead of the instance — classes aren't subject to Pydantic's instance-level restriction.
+
+### 2. Gemini 3.x returns `.content` as a list of blocks, not a string
+After switching to a current-generation Gemini model (older models were quietly deprecated for
+new API keys — see #3), `response.content.strip()` started raising
+`AttributeError: 'list' object has no attribute 'strip'`. Gemini's 3.x models return content as
+`[{"type": "text", "text": "...", ...}]` instead of a plain string. **Fixed** via a shared
+`extract_text()` helper in `llm_provider.py`, used at every call site that reads
+`response.content`, so the code no longer assumes a specific provider's response shape.
+
+### 3. `gemini-2.0-flash-lite` / `gemini-2.5-flash` blocked for new API keys
+Both models returned `429 RESOURCE_EXHAUSTED` (`limit: 0`) or `404 NOT_FOUND ("no longer
+available to new users")` on a freshly created key/project — Google has been retiring older
+Gemini generations ahead of full shutdown. **Fixed** by switching to `gemini-3.5-flash-lite`,
+confirmed working via an isolated standalone diagnostic script before wiring it back into the app.
+
+### 4. DB engine lifecycle vs. pytest-asyncio's per-test event loops
+The original test fixture created and disposed a brand-new SQLAlchemy engine on *every*
+DB-touching request (not just per test) — a real performance bug, not just a test artifact. A
+naive single-global-engine fix crashed with `RuntimeError: Event loop is closed` / `attached to
+a different loop`, because pytest-asyncio gives each test function its own event loop by
+default, and an engine's connection pool can't outlive the loop it was created on. **Fixed**
+with a function-scoped `db_engine` fixture — one engine per test function (not per request, not
+shared globally), tied to that test's own event loop and disposed in teardown. Local suite
+runtime dropped from 30m33s to 21m26s with all 58 tests passing.
+
+</details>
+
+---
+
+<details>
+<summary><h2 style="display:inline">Tech Stack</h2></summary>
+
+```
+FastAPI                — API framework
+PostgreSQL (Neon)      — Primary database
+SQLAlchemy 2.0 async   — ORM, async throughout
+Alembic                — Schema version control
+JWT + bcrypt           — Authentication
+slowapi                — Per-IP rate limiting on AI endpoints
+APScheduler            — Background settlement reminders
+LangChain              — Chains wrapping Q&A + categorization
+LangGraph               — 3-route conditional agent
+Groq (llama-3.1-8b)     — Primary LLM provider
+Gemini (3.5-flash-lite) — Automatic fallback provider
+pytest                  — 58-test suite (CRUD, auth, security/IDOR, AI, fallback)
+GitHub Actions           — CI on every push
+```
+
+</details>
+
+---
 
 ## Setup & Installation
 
@@ -239,31 +390,6 @@ pytest tests/ -v
 | `unequal` | Caller provides exact amount for each user (must sum to total) |
 | `percentage` | Caller provides percentage for each user (must sum to 100%) |
 
-## AI Features
-
-**POST /ai/ask** — Ask natural language questions:
-
-```json
-{
-  "group_id": "uuid-here",
-  "question": "Who owes the most in this group?"
-}
-```
-
-**POST /ai/categorize** — Auto-categorize expenses:
-
-```json
-{
-  "description": "Dinner at Barbeque Nation"
-}
-```
-
-Returns: `{ "category": "Food" }`
-
-**POST /ai/agent/{group_id}** — Conditional routing agent:
-
-Returns: `summary`, `reminders`, and AI-generated `final_report`
-
 ## Security
 
 - **JWT tokens** — Short-lived access tokens (30 min) + long-lived refresh tokens (7 days)
@@ -274,9 +400,12 @@ Returns: `summary`, `reminders`, and AI-generated `final_report`
 - **Rate limiting** — AI endpoints protected with slowapi
 - **Secrets management** — All secrets in .env, never committed to git
 
+---
+
 ## Author
 
-**Saurabh Sagar** — Backend Developer & QA Automation Engineer
+**Saurabh Sagar** 
+Lucknow, Uttar Pradesh, India
 
 - GitHub: [@sgr111](https://github.com/sgr111)
 - Email: sgrsourabh111@gmail.com
