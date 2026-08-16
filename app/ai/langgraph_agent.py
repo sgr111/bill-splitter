@@ -1,6 +1,7 @@
-from typing import TypedDict
+from typing import TypedDict, Optional
 from langgraph.graph import StateGraph, END
 from app.ai.llm_provider import llm, extract_text
+from app.ai.observability import ObservabilityCallback
 import logging
 
 logger = logging.getLogger(__name__)
@@ -14,6 +15,7 @@ class AgentState(TypedDict):
     reminders: list
     final_report: str
     route: str  # konsa path lega agent
+    db_session: object  # SQLAlchemy AsyncSession, or None — threaded through for observability logging
 
 
 # ── NODE 1: Analyze State ────────────────────────────────────
@@ -69,7 +71,7 @@ def route_decision(state: AgentState) -> str:
 
 # ── NODE 2A: Empty Group ─────────────────────────────────────
 async def handle_empty_group(state: AgentState) -> AgentState:
-    """Koi expense nahi — suggestion do."""
+    """Koi expense nahi — suggestion do. No LLM call — nothing to log."""
     state["reminders"] = []
     state["final_report"] = (
         "This group has no expenses yet. Start by adding your first shared "
@@ -82,10 +84,17 @@ async def handle_empty_group(state: AgentState) -> AgentState:
 async def handle_all_clear(state: AgentState) -> AgentState:
     """Sab settled — celebration message."""
     state["reminders"] = []
+    obs_cb = ObservabilityCallback(
+        feature="agent_all_clear",
+        prompt_name="agent_all_clear_message",
+        prompt_version="v1",
+        db_session=state.get("db_session"),
+    )
     response = await llm.ainvoke(
         f"The group has {len(state['expenses'])} expenses and all dues are "
         f"completely settled. Write a short friendly congratulations message "
-        f"(2 sentences max) for the group. Summary: {state['summary']}"
+        f"(2 sentences max) for the group. Summary: {state['summary']}",
+        config={"callbacks": [obs_cb]},
     )
     state["final_report"] = extract_text(response.content)
     return state
@@ -93,7 +102,7 @@ async def handle_all_clear(state: AgentState) -> AgentState:
 
 # ── NODE 2C: Calculate Reminders ────────────────────────────
 def calculate_reminders(state: AgentState) -> AgentState:
-    """Unsettled balances se reminders banao."""
+    """Unsettled balances se reminders banao. No LLM call — nothing to log."""
     balances = state["balances"]
     reminders = []
     for user_id, balance in balances.items():
@@ -136,7 +145,13 @@ Pending Reminders:
 Write a friendly, concise report (3-4 sentences) summarizing the group's 
 financial status and what actions are needed to settle up."""
 
-    response = await llm.ainvoke(prompt)
+    obs_cb = ObservabilityCallback(
+        feature="agent_final_report",
+        prompt_name="agent_final_report",
+        prompt_version="v1",
+        db_session=state.get("db_session"),
+    )
+    response = await llm.ainvoke(prompt, config={"callbacks": [obs_cb]})
     state["final_report"] = extract_text(response.content)
     return state
 
@@ -180,7 +195,7 @@ def build_agent():
 agent = build_agent()
 
 
-async def run_agent(group_id: str, expenses: list, balances: dict) -> dict:
+async def run_agent(group_id: str, expenses: list, balances: dict, db_session=None) -> dict:
     result = await agent.ainvoke({
         "group_id": group_id,
         "expenses": expenses,
@@ -189,5 +204,6 @@ async def run_agent(group_id: str, expenses: list, balances: dict) -> dict:
         "reminders": [],
         "final_report": "",
         "route": "",
+        "db_session": db_session,
     })
     return result

@@ -1,6 +1,6 @@
 import asyncio
 from langchain_google_genai import ChatGoogleGenerativeAI
-from app.config import settings
+from app.core.config import settings
 
 async def test():
     llm = ChatGoogleGenerativeAI(

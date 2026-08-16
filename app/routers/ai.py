@@ -1,16 +1,17 @@
 import uuid
 import logging
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from pydantic import BaseModel
 from slowapi import Limiter
 from slowapi.util import get_remote_address
-from app.dependencies import get_db, get_current_user
+from app.core.dependencies import get_db, get_current_user
 from app.models.user import User
 from app.models.group import GroupMember
 from app.models.expense import Expense, ExpenseSplit
-from app.ai.langchain_qa import ask_expense_question, categorize_expense
+from app.ai.langchain_qa import ask_expense_question, ask_expense_question_stream, categorize_expense
 from app.ai.langgraph_agent import run_agent
 
 router = APIRouter(prefix="/ai", tags=["AI"])
@@ -49,26 +50,20 @@ async def assert_member(group_id: uuid.UUID, user_id: uuid.UUID, db: AsyncSessio
         raise HTTPException(status_code=403, detail="Not a member of this group")
 
 
-@router.post("/ask")
-@limiter.limit("10/minute")
-async def ask_question(
-    request: Request,
-    payload: AskRequest,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    await assert_member(payload.group_id, current_user.id, db)
-
+async def _load_expense_context(group_id: uuid.UUID, db: AsyncSession) -> str | None:
+    """Shared by /ai/ask and /ai/ask/stream — builds the same expense+splits
+    text block both endpoints feed to the LLM. Returns None if the group has
+    no expenses (caller decides how to respond in that case)."""
     expenses_result = await db.execute(
         select(Expense).where(
-            Expense.group_id == payload.group_id,
+            Expense.group_id == group_id,
             Expense.is_deleted == False,
         )
     )
     expenses = expenses_result.scalars().all()
 
     if not expenses:
-        return {"answer": "No expenses found in this group yet."}
+        return None
 
     expense_data = "\n".join([
         f"- {e.description}: Rs.{e.total_amount} (split: {e.split_type}, paid by: {e.paid_by})"
@@ -79,7 +74,7 @@ async def ask_question(
         select(ExpenseSplit)
         .join(Expense, ExpenseSplit.expense_id == Expense.id)
         .where(
-            Expense.group_id == payload.group_id,
+            Expense.group_id == group_id,
             Expense.is_deleted == False,
         )
     )
@@ -89,13 +84,67 @@ async def ask_question(
         for s in splits
     ])
 
-    full_data = f"Expenses:\n{expense_data}\n\nSplits:\n{splits_data}"
+    return f"Expenses:\n{expense_data}\n\nSplits:\n{splits_data}"
+
+
+@router.post("/ask")
+@limiter.limit("10/minute")
+async def ask_question(
+    request: Request,
+    payload: AskRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    await assert_member(payload.group_id, current_user.id, db)
+
+    full_data = await _load_expense_context(payload.group_id, db)
+    if full_data is None:
+        return {"answer": "No expenses found in this group yet."}
 
     try:
-        answer = await ask_expense_question(full_data, payload.question)
+        answer = await ask_expense_question(full_data, payload.question, db_session=db)
         return {"answer": answer}
     except Exception as e:
         handle_ai_error(e)
+
+
+@router.post("/ask/stream")
+@limiter.limit("10/minute")
+async def ask_question_stream(
+    request: Request,
+    payload: AskRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Streaming variant of /ai/ask — same auth/membership checks and same
+    underlying data, but returns a text/plain streamed response (chunks
+    arrive as the model generates them) instead of a single JSON blob.
+
+    NOTE: streaming responses can't easily wrap the generator body in the
+    same try/except -> HTTPException pattern as the other endpoints, since
+    by the time an error happens mid-stream, the HTTP response has already
+    started (status 200 already sent). Errors that happen INSIDE the
+    generator are logged and surfaced as a plain-text message appended to
+    the stream instead of an HTTPException.
+    """
+    await assert_member(payload.group_id, current_user.id, db)
+
+    full_data = await _load_expense_context(payload.group_id, db)
+    if full_data is None:
+        async def _empty_stream():
+            yield "No expenses found in this group yet."
+        return StreamingResponse(_empty_stream(), media_type="text/plain")
+
+    async def _stream():
+        try:
+            async for chunk in ask_expense_question_stream(full_data, payload.question, db_session=db):
+                yield chunk
+        except Exception as e:
+            logger.error(f"AI streaming call failed: {type(e).__name__}: {e}", exc_info=True)
+            yield "\n\n[AI service temporarily unavailable — please try again.]"
+
+    return StreamingResponse(_stream(), media_type="text/plain")
 
 
 @router.post("/categorize")
@@ -103,10 +152,11 @@ async def ask_question(
 async def categorize(
     request: Request,
     payload: CategorizeRequest,
+    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     try:
-        category = await categorize_expense(payload.description)
+        category = await categorize_expense(payload.description, db_session=db)
         return {"description": payload.description, "category": category}
     except Exception as e:
         handle_ai_error(e)
@@ -166,7 +216,7 @@ async def run_group_agent(
     balances_str_keys = {str(k): v for k, v in balances.items()}
 
     try:
-        result = await run_agent(str(group_id), expenses_list, balances_str_keys)
+        result = await run_agent(str(group_id), expenses_list, balances_str_keys, db_session=db)
         return {
             "group_id": str(group_id),
             "summary": result["summary"],

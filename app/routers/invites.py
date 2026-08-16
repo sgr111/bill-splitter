@@ -3,13 +3,13 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from datetime import datetime, timezone
-from app.dependencies import get_db, get_current_user
+from app.core.dependencies import get_db, get_current_user
 from app.models.user import User
 from app.models.group import Group, GroupMember
 from app.models.invite import InviteLink
 from app.schemas.invite import InviteLinkResponse, InviteJoinResponse
 from app.services.invite_service import generate_short_code, get_expiry
-from app.config import settings
+from app.core.config import settings
 
 router = APIRouter(tags=["Invites"])
 

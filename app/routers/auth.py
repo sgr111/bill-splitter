@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from app.database import AsyncSessionLocal
+from app.core.database import AsyncSessionLocal
 from app.models.user import User
 from app.schemas.user import UserRegister, UserLogin, UserResponse, TokenResponse, RefreshRequest
 from app.services.auth_service import (
@@ -11,7 +11,7 @@ from app.services.auth_service import (
     create_refresh_token,
     verify_refresh_token,
 )
-from app.dependencies import get_db, get_current_user
+from app.core.dependencies import get_db, get_current_user
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 

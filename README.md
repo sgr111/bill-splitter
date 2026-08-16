@@ -5,24 +5,31 @@
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-Neon-336791?logo=postgresql&logoColor=white)
 ![Tests](https://img.shields.io/badge/pytest-58_passing-brightgreen?logo=pytest&logoColor=white)
 ![AI](https://img.shields.io/badge/AI-Groq_%2B_Gemini_Fallback-4285F4?logo=google&logoColor=white)
+![Observability](https://img.shields.io/badge/Observability-llm--observability-8b5cf6)
 ![CI](https://img.shields.io/badge/CI-GitHub_Actions-2088FF?logo=githubactions&logoColor=white)
 
 > A production-style Splitwise clone built with FastAPI, PostgreSQL, and AI-powered expense
-> insights — with automatic multi-provider LLM fallback (Groq primary, Gemini on failure) so
-> the AI features stay up through a single-provider outage.
+> insights — with automatic multi-provider LLM fallback (Groq primary, Gemini on failure),
+> full LLM call observability, and streaming responses, so the AI layer is resilient,
+> traceable, and responsive.
 
 ## Introduction
 
 - REST API for group expense splitting — JWT auth, group management, three split modes
   (equal/unequal/percentage), and a greedy debt-minimization algorithm for settle-up suggestions.
-- Three AI features on top: natural-language Q&A over a group's real expense data, LLM-based
-  expense categorization, and a **LangGraph conditional-routing agent** that picks one of three
-  paths (empty group / all settled / needs analysis) based on actual financial state — skipping
-  the LLM call entirely when there's nothing to analyze.
+- Three AI features on top: natural-language Q&A over a group's real expense data (available
+  both as a single JSON response and as a streamed response), LLM-based expense categorization,
+  and a **LangGraph conditional-routing agent** that picks one of three paths (empty group / all
+  settled / needs analysis) based on actual financial state — skipping the LLM call entirely
+  when there's nothing to analyze.
 - Every LLM call — Q&A, categorization, and both LLM-calling agent nodes — goes through a single
   shared, fallback-wired LLM instance (`app/ai/llm_provider.py`): **Groq is primary**, and
   LangChain's `with_fallbacks()` automatically retries against **Gemini** if Groq fails, with no
   manual error handling at any call site.
+- Every one of those calls is also logged for observability via a shared
+  [`llm-observability`](https://github.com/sgr111/llm-observability) package — project, feature,
+  which provider actually answered, model, prompt version, latency, and success/failure, all
+  persisted to a `llm_calls` table for later inspection.
 - IDOR-hardened by design — UUID primary keys plus explicit per-endpoint membership/ownership
   checks — and covered by a dedicated 8-test security suite alongside the main test suite.
 - 58 tests total (auth, CRUD, security/IDOR, AI endpoints, and a dedicated provider-fallback
@@ -44,21 +51,34 @@
                 │  routers/settlements.py           │        │
                 │  routers/invites.py               │        ▼
                 │  routers/ai.py         ───────┐   │  ┌─────────────┐
-                └────────────────────────────────┤   │  │  PostgreSQL │
-                                                  │   │  │   (Neon)    │
-                ┌─────────────────────────────────▼──┘  │             │
-                │      AI Layer (LangChain/LangGraph)    │  users      │
-                │                                        │  groups     │
-                │  langchain_qa.py                       │  expenses   │
-                │   ├── ask_expense_question()            │  splits     │
-                │   └── categorize_expense()               │  settlements│
-                │                                          │  invites    │
-                │  langgraph_agent.py (3-route agent)      └─────────────┘
+                │   /ai/ask (JSON)               │   │  │  PostgreSQL │
+                │   /ai/ask/stream (streamed)     │   │  │   (Neon)    │
+                │   /ai/categorize                │   │  │             │
+                │   /ai/agent/{group_id}          │   │  │  users      │
+                └───────────────────────────────┐ │   │  │  groups     │
+                                                 │ │   │  │  expenses   │
+                ┌─────────────────────────────────▼┘   │  │  splits     │
+                │      AI Layer (LangChain/LangGraph)   │  │  settlements│
+                │                                       │  │  invites    │
+                │  langchain_qa.py                      │  │  llm_calls  │
+                │   ├── ask_expense_question()            └─────────────┘
+                │   ├── ask_expense_question_stream()
+                │   └── categorize_expense()
+                │
+                │  langgraph_agent.py (3-route agent)
                 │   ├── analyze_state ── routes on
                 │   │     expenses + balances
                 │   ├── empty_group ── no LLM call
                 │   ├── all_clear ── 1 LLM call
                 │   └── reminders → report ── 1 LLM call
+                │             │
+                │             ▼
+                │  observability.py ── ObservabilityCallback
+                │   attached to every LLM-calling node/chain,
+                │   logs to llm_calls via llm-observability's
+                │   track_llm_call() — dynamic provider
+                │   detection (groq/gemini) per call, since
+                │   fallback means either can answer any call
                 │             │
                 │             ▼
                 │  llm_provider.py
@@ -83,9 +103,11 @@
 - **IDOR Protection** — UUID primary keys + per-endpoint authorization checks, verified by an 8-test security suite
 - **Soft Deletes** — groups/expenses use `is_active`/`is_deleted` flags instead of hard deletes
 - **Greedy Debt Minimization** — settle-up suggestions computed with the minimum number of transactions, not naive pairwise settlement
-- **LangChain** — chains wrapping every Groq/Gemini call (Q&A, categorization)
+- **LangChain** — chains wrapping every Groq/Gemini call (Q&A, categorization, streaming Q&A)
 - **LangGraph** — a real conditional-routing agent, not just a linear chain — 3 dynamic paths based on computed group state
 - **Multi-Provider Fallback** — `with_fallbacks()`-based automatic Groq→Gemini failover, shared across the whole AI layer via one `llm_provider.py` module
+- **LLM Observability** — every LLM call logged (provider, model, latency, prompt version, success/failure) via a custom LangChain callback bridging into a shared `llm-observability` package, reused across projects
+- **Streaming Responses** — `/ai/ask/stream` streams model output as it's generated, alongside the original JSON `/ai/ask` for clients that want a single response
 - **APScheduler** — background reminders for dues unsettled longer than 3 days
 - **Rate Limiting** — slowapi per-IP limits on all AI endpoints (tightest on the heaviest, multi-call agent endpoint)
 - **Alembic** — versioned schema migrations
@@ -100,6 +122,7 @@
 | Feature | Endpoint | Limit | What It Does |
 |---------|----------|-------|-------------|
 | **Expense Q&A** | `POST /ai/ask` | 10/min | Ask plain-English questions about a group's expenses — answered only from that group's real data |
+| **Streaming Q&A** | `POST /ai/ask/stream` | 10/min | Same as above, but streams the answer token-by-token instead of waiting for the full response |
 | **Auto-Categorization** | `POST /ai/categorize` | 20/min | Classifies an expense description into Food/Transport/Accommodation/Entertainment/Shopping/Other |
 | **Conditional Agent** | `POST /ai/agent/{group_id}` | 5/min | LangGraph agent — routes to a no-LLM message, a short congratulations, or a full analysis + reminders, based on actual group state |
 
@@ -113,6 +136,8 @@
 | **Rate Limiting** | slowapi | Per-IP limits scoped tightest on the most expensive AI endpoint |
 | **Scheduler** | APScheduler | Background job for overdue-settlement reminders |
 | **LLM Fallback** | LangChain `with_fallbacks()` | Groq primary, Gemini automatic failover — one shared `llm` instance for the whole AI layer |
+| **LLM Observability** | `llm-observability` + custom callback | Every LLM call logged to `llm_calls` — project, feature, provider, model, latency, prompt version, success/failure |
+| **Streaming** | LangChain `.astream()` + FastAPI `StreamingResponse` | Token-by-token response delivery on `/ai/ask/stream`, fallback-aware |
 | **Content Normalization** | `extract_text()` helper | Handles both plain-string (Groq) and list-of-blocks (Gemini 3.x) response formats transparently |
 
 ---
@@ -123,9 +148,14 @@
 bill-splitter/
 ├── app/
 │   ├── ai/
-│   │   ├── langchain_qa.py      # LangChain Q&A + categorization
+│   │   ├── langchain_qa.py      # LangChain Q&A + categorization + streaming Q&A
 │   │   ├── langgraph_agent.py   # LangGraph conditional routing agent
-│   │   └── llm_provider.py      # Shared Groq->Gemini fallback-wired LLM + extract_text()
+│   │   ├── llm_provider.py      # Shared Groq->Gemini fallback-wired LLM + extract_text()
+│   │   └── observability.py     # ObservabilityCallback — bridges LangChain callbacks into llm-observability
+│   ├── core/
+│   │   ├── config.py            # pydantic-settings — single source of truth for secrets/env
+│   │   ├── database.py          # SQLAlchemy async engine + session factory
+│   │   └── dependencies.py      # get_db, get_current_user (FastAPI dependency injection)
 │   ├── models/
 │   │   ├── user.py
 │   │   ├── group.py
@@ -147,10 +177,12 @@ bill-splitter/
 │   │   ├── settle_service.py
 │   │   ├── invite_service.py
 │   │   └── reminder_service.py
-│   ├── config.py
-│   ├── database.py
-│   ├── dependencies.py
 │   └── main.py
+├── scripts/
+│   ├── check_gemini_key.py      # Standalone diagnostic tool for Gemini API key/model issues
+│   └── check_groq.py            # Standalone diagnostic tool for Groq API key/model issues
+│                                 # (run scripts via `python -m scripts.<name>`, not `python scripts/<name>.py`
+│                                 #  — the -m form resolves `app.core.*` imports from the project root correctly)
 ├── tests/
 │   ├── conftest.py              # function-scoped db_engine fixture (see Known Issues Fixed #4)
 │   ├── test_auth.py             # 10 tests
@@ -163,6 +195,7 @@ bill-splitter/
 │   ├── test_ai.py               # 8 AI tests
 │   └── test_llm_fallback.py     # 4 provider-fallback tests
 ├── alembic/
+│   └── versions/                # includes the llm_calls table migration
 ├── .env.example
 ├── requirements.txt
 └── README.md
@@ -224,7 +257,8 @@ bill-splitter/
 ### AI (Rate Limited)
 | Method | Endpoint | Limit | Description |
 |--------|----------|-------|-------------|
-| POST | /ai/ask | 10/min | Natural language expense query |
+| POST | /ai/ask | 10/min | Natural language expense query (JSON response) |
+| POST | /ai/ask/stream | 10/min | Same as /ai/ask, but streamed |
 | POST | /ai/categorize | 20/min | Auto-categorize expense |
 | POST | /ai/agent/{group_id} | 5/min | LangGraph conditional routing agent |
 
@@ -260,6 +294,47 @@ LangChain automatically retries the same request against **Gemini** — no manua
 any call site, and no code needs to know which provider actually answered. Covered by
 `tests/test_llm_fallback.py`, which mocks Groq to force a failure and asserts the endpoint
 still returns a valid, Gemini-sourced response.
+
+---
+
+## Observability
+
+Every LLM call — regardless of which endpoint triggers it or which provider ends up serving it
+— is logged via a shared, cross-project [`llm-observability`](https://github.com/sgr111/llm-observability)
+package. A custom `ObservabilityCallback` (`app/ai/observability.py`) bridges LangChain's
+callback hooks into the package's `track_llm_call()` function, capturing:
+
+- **project** + **feature** — which endpoint/call-site triggered this
+- **provider** — detected dynamically per call (`groq` or `gemini`), since fallback means either
+  provider can answer any given request
+- **model**, **prompt_name**/**prompt_version**
+- **latency_ms** — real, accurate timing (not the near-zero time it'd take to re-wrap an
+  already-resolved value)
+- **success**/**error_message**
+
+All of this lands in a `llm_calls` table in the same Postgres database, queryable directly:
+
+```sql
+SELECT provider, feature, latency_ms, success, created_at
+FROM llm_calls
+ORDER BY created_at DESC
+LIMIT 10;
+```
+
+A single Groq failure followed by a successful Gemini fallback naturally produces **two** log
+rows for one logical request — one failed (`provider=groq`), one succeeded (`provider=gemini`)
+— giving full visibility into when and how often the fallback actually triggers in practice.
+
+---
+
+## Streaming
+
+`POST /ai/ask/stream` streams the model's answer as it's generated, instead of waiting for the
+full response like `/ai/ask` does. Backed by LangChain's `.astream()` and FastAPI's
+`StreamingResponse`. Observability requires no special handling here — the callback's
+`on_llm_end` hook fires once the full stream has been consumed, so latency and logging behave
+identically to the non-streaming path. The original `/ai/ask` JSON endpoint is unchanged and
+still available for clients that just want a single response.
 
 ---
 
@@ -301,6 +376,13 @@ with a function-scoped `db_engine` fixture — one engine per test function (not
 shared globally), tied to that test's own event loop and disposed in teardown. Local suite
 runtime dropped from 30m33s to 21m26s with all 58 tests passing.
 
+### 5. Gemini responses sometimes omit `model_name` in observability logs
+`response.llm_output` doesn't always report `model_name` for Gemini responses (a
+`langchain_google_genai` quirk — Groq's `ChatGroq` always populates it), leaving the `model`
+column empty on some `llm_calls` rows. **Fixed** by capturing a model-name hint from LangChain's
+`serialized` construction kwargs at call-start time and falling back to it whenever the
+end-of-call response doesn't report one.
+
 </details>
 
 ---
@@ -316,12 +398,13 @@ Alembic                — Schema version control
 JWT + bcrypt           — Authentication
 slowapi                — Per-IP rate limiting on AI endpoints
 APScheduler            — Background settlement reminders
-LangChain              — Chains wrapping Q&A + categorization
-LangGraph               — 3-route conditional agent
-Groq (llama-3.1-8b)     — Primary LLM provider
-Gemini (3.5-flash-lite) — Automatic fallback provider
-pytest                  — 58-test suite (CRUD, auth, security/IDOR, AI, fallback)
-GitHub Actions           — CI on every push
+LangChain               — Chains wrapping Q&A, categorization, streaming
+LangGraph                — 3-route conditional agent
+Groq (llama-3.1-8b)      — Primary LLM provider
+Gemini (3.5-flash-lite)  — Automatic fallback provider
+llm-observability        — Shared cross-project LLM call logging package
+pytest                   — 58-test suite (CRUD, auth, security/IDOR, AI, fallback)
+GitHub Actions            — CI on every push
 ```
 
 </details>
@@ -398,13 +481,15 @@ pytest tests/ -v
 - **Per-endpoint authorization** — Every endpoint verifies group membership
 - **IDOR test suite** — 8 dedicated security tests verify data isolation
 - **Rate limiting** — AI endpoints protected with slowapi
-- **Secrets management** — All secrets in .env, never committed to git
+- **Secrets management** — All secrets in .env, never committed to git; `alembic.ini` never
+  hardcodes a connection string — it's loaded dynamically from `settings.DATABASE_URL` in
+  `alembic/env.py`
 
 ---
 
 ## Author
 
-**Saurabh Sagar** 
+**Saurabh Sagar** — Backend Developer & QA Automation Engineer
 Lucknow, Uttar Pradesh, India
 
 - GitHub: [@sgr111](https://github.com/sgr111)

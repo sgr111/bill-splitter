@@ -3,8 +3,8 @@ import pytest_asyncio
 from httpx import AsyncClient, ASGITransport
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from app.main import app
-from app.dependencies import get_db
-from app.config import settings
+from app.core.dependencies import get_db
+from app.core.config import settings
 
 TEST_DATABASE_URL = settings.DATABASE_URL
 

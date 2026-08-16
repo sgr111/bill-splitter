@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime, timezone, timedelta
-from app.config import settings
+from app.core.config import settings
 
 BASE62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 

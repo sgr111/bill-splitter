@@ -3,7 +3,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, Asyn
 from sqlalchemy import select
 from datetime import datetime, timezone, timedelta
 from app.models.expense import ExpenseSplit, Expense
-from app.config import settings
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
