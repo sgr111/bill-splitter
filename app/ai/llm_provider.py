@@ -12,10 +12,10 @@ gemini_llm — no manual try/except needed at call sites.
 from langchain_groq import ChatGroq
 from langchain_google_genai import ChatGoogleGenerativeAI
 
-from app.config import settings
+from app.core.config import settings
 
 groq_llm = ChatGroq(
-    model="llama-3.1-8b-instant",
+    model="openai/gpt-oss-20b",   # "llama-3.1-8b-instant" se badla
     api_key=settings.GROQ_API_KEY,
     temperature=0.3,
 )
