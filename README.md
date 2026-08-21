@@ -139,6 +139,7 @@
 | **LLM Observability** | `llm-observability` + custom callback | Every LLM call logged to `llm_calls` — project, feature, provider, model, latency, prompt version, success/failure |
 | **Streaming** | LangChain `.astream()` + FastAPI `StreamingResponse` | Token-by-token response delivery on `/ai/ask/stream`, fallback-aware |
 | **Content Normalization** | `extract_text()` helper | Handles both plain-string (Groq) and list-of-blocks (Gemini 3.x) response formats transparently |
+| **Transport Security** | SSL/TLS (DB) + platform-terminated HTTPS (API) | DB connection enforces `ssl=require`; production HTTPS handled by the deployment platform |
 
 ---
 
@@ -403,6 +404,7 @@ LangGraph                — 3-route conditional agent
 Groq (llama-3.1-8b)      — Primary LLM provider
 Gemini (3.5-flash-lite)  — Automatic fallback provider
 llm-observability        — Shared cross-project LLM call logging package
+SSL/TLS                  — Enforced on the DB connection; HTTPS terminated at the platform edge in production
 pytest                   — 58-test suite (CRUD, auth, security/IDOR, AI, fallback)
 GitHub Actions            — CI on every push
 ```
@@ -481,6 +483,11 @@ pytest tests/ -v
 - **Per-endpoint authorization** — Every endpoint verifies group membership
 - **IDOR test suite** — 8 dedicated security tests verify data isolation
 - **Rate limiting** — AI endpoints protected with slowapi
+- **Encrypted DB connection** — the Postgres connection to Neon enforces SSL/TLS
+  (`connect_args={"ssl": "require"}` in `app/core/database.py`); the connection simply won't
+  establish without it
+- **HTTPS in production** — the deployment platform (Render) terminates TLS at its edge and
+  auto-manages certificates; the app itself never handles certificates directly
 - **Secrets management** — All secrets in .env, never committed to git; `alembic.ini` never
   hardcodes a connection string — it's loaded dynamically from `settings.DATABASE_URL` in
   `alembic/env.py`
